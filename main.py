@@ -54,6 +54,11 @@ WS_MAX_HOLD = 2.0
 AD_MAX_HOLD = 0.5
 MIN_HOLD = 0.2
 
+EVENT_TOTAL_MEAN_SEC = 3.0
+EVENT_TOTAL_STD_SEC = 1.0
+EVENT_TOTAL_MIN_SEC = 0.2
+EVENT_TOTAL_MAX_SEC = 5.0
+
 
 # ===== SendInput 構造体（サイズ整合が重要） =====
 class MOUSEINPUT(ctypes.Structure):
@@ -296,6 +301,25 @@ def clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, value))
 
 
+def choose_pair_diff(min_diff: float, max_diff: float, target_diff: float) -> float:
+    """差分を選ぶ。debt回収を優先しつつ、ゼロ固定化を避けるために揺らぎを入れる。"""
+    if min_diff == max_diff:
+        return min_diff
+
+    # debtがほぼ0のときはレンジ内でランダムに選び、常に同値になる現象を回避。
+    if abs(target_diff) < 1e-9:
+        return random.uniform(min_diff, max_diff)
+
+    # debt回収方向を中心に、許容レンジ内でランダムに揺らす。
+    span = max_diff - min_diff
+    jitter = span * 0.25
+    lo = clamp(target_diff - jitter, min_diff, max_diff)
+    hi = clamp(target_diff + jitter, min_diff, max_diff)
+    if lo > hi:
+        lo, hi = hi, lo
+    return random.uniform(lo, hi)
+
+
 def distribute_pair_duration(pair_total: float, cap_each: float, debt: float) -> tuple[float, float, float]:
     """pair_total を2キーへ分配し、差分(debt)も更新する。返り値: (left, right, new_debt)。"""
     if pair_total <= 0:
@@ -312,7 +336,7 @@ def distribute_pair_duration(pair_total: float, cap_each: float, debt: float) ->
         min_diff = mid
         max_diff = mid
 
-    diff = clamp(target_diff, min_diff, max_diff)
+    diff = choose_pair_diff(min_diff, max_diff, target_diff)
     left = (pair_total + diff) / 2.0
     right = (pair_total - diff) / 2.0
 
@@ -335,7 +359,11 @@ def distribute_pair_duration(pair_total: float, cap_each: float, debt: float) ->
 
 
 def build_event_durations(pair_debts: dict[str, float]) -> tuple[float, dict[str, float]]:
-    total_event = clamp(random.gauss(3.0, 1.0), 0.2, 5.0)
+    total_event = clamp(
+        random.gauss(EVENT_TOTAL_MEAN_SEC, EVENT_TOTAL_STD_SEC),
+        EVENT_TOTAL_MIN_SEC,
+        EVENT_TOTAL_MAX_SEC,
+    )
 
     # 合計時間を ws と ad にランダム配分（各pairの上限を守る）
     ws_max_total = 2.0 * WS_MAX_HOLD
