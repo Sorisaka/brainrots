@@ -416,7 +416,7 @@ def random_key_event(pair_debts: dict[str, float]) -> None:
         emit_key_hold(ch, durations[ch])
 
 
-def run_loop(hwnd: int, duration_minutes: float | None) -> None:
+def run_loop(hwnd: int, duration_minutes: float | None, debug_fast_interval: bool = False) -> None:
     pair_debts = {"ws": 0.0, "ad": 0.0}
     loop_start = time.monotonic()
     hard_limit = loop_start + (duration_minutes * 60.0) if duration_minutes is not None else None
@@ -427,7 +427,7 @@ def run_loop(hwnd: int, duration_minutes: float | None) -> None:
             print("[INFO] duration-minutes reached. exiting.")
             return
 
-        interval_sec = max(1.0, random.gauss(15 * 60, 4 * 60))
+        interval_sec = 1.0 if debug_fast_interval else max(1.0, random.gauss(15 * 60, 4 * 60))
 
         if hard_limit is not None:
             remain_global = hard_limit - now
@@ -466,6 +466,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="fire click action immediately at startup (for debug)",
     )
+    parser.add_argument(
+        "--debug-fast-interval",
+        action="store_true",
+        help="force wait interval to 1 second for debt-recovery testing",
+    )
     return parser.parse_args()
 
 
@@ -491,7 +496,9 @@ def main() -> None:
             print("[DEBUG] fire click action now")
             perform_click_action(hwnd)
 
-        run_loop(hwnd, args.duration_minutes)
+        if args.debug_fast_interval:
+            print("[DEBUG] fast interval mode enabled: wait fixed to 1.0s")
+        run_loop(hwnd, args.duration_minutes, debug_fast_interval=args.debug_fast_interval)
     except KeyboardInterrupt:
         print("\n[INFO] KeyboardInterrupt received. stopping safely.")
     finally:

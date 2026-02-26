@@ -70,6 +70,12 @@ python main.py --title "Roblox" --debug-fire-click
 python main.py --title "Roblox" --debug-fire-keys --debug-fire-click
 ```
 
+### 7) 差分回収テスト（待機を1秒固定で連続実行）
+
+```bash
+python main.py --title "Roblox" --debug-fast-interval
+```
+
 ---
 
 ## CLIオプション
@@ -79,6 +85,7 @@ python main.py --title "Roblox" --debug-fire-keys --debug-fire-click
 - `--duration-minutes <float>`: N分で終了（未指定なら無限）
 - `--debug-fire-keys`: 起動時にキーイベントを即時1回実行
 - `--debug-fire-click`: 起動時にクリックアクションを即時1回実行
+- `--debug-fast-interval`: 待機を常に1秒に固定（差分回収テスト向け）
 
 ---
 
