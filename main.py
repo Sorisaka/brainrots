@@ -7,6 +7,7 @@ Windows11向け SendInput 入力自動化スクリプト。
 実行例:
   python main.py --title Roblox --match partial --duration-minutes 60
   python main.py --title "Roblox" --match exact
+  python main.py --title Roblox --debug-fire-keys --debug-fire-click
 """
 
 import argparse
@@ -46,6 +47,12 @@ MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_ABSOLUTE = 0x8000
 
 ULONG_PTR = getattr(wintypes, "ULONG_PTR", ctypes.c_size_t)
+
+# pairごとの仕様
+PAIR_DIFF_LIMIT = 0.2
+WS_MAX_HOLD = 2.0
+AD_MAX_HOLD = 0.5
+MIN_HOLD = 0.2
 
 
 # ===== SendInput 構造体（サイズ整合が重要） =====
@@ -235,7 +242,6 @@ def perform_click_action(hwnd: int) -> None:
       3) mouse_click_only()
     """
     _ = hwnd
-    # 現状はクリック入力のみを実行。位置計算/移動は後で実装。
     mouse_click_only()
 
 
@@ -286,34 +292,104 @@ def release_all_wasd() -> None:
             pass
 
 
-def random_key_event() -> None:
-    total_event = max(0.2, random.gauss(4.0, 1.0))
-    chosen = random.sample(list("wasd"), 2)
-    started = time.monotonic()
+def clamp(value: float, min_value: float, max_value: float) -> float:
+    return max(min_value, min(max_value, value))
 
-    print(f"[EVENT] selected keys={tuple(k.upper() for k in chosen)} total={total_event:.3f}s")
 
-    while True:
-        elapsed = time.monotonic() - started
-        remain = total_event - elapsed
-        if remain <= 0:
-            break
+def distribute_pair_duration(pair_total: float, cap_each: float, debt: float) -> tuple[float, float, float]:
+    """pair_total を2キーへ分配し、差分(debt)も更新する。返り値: (left, right, new_debt)。"""
+    if pair_total <= 0:
+        return 0.0, 0.0, debt
 
-        key = random.choice(chosen)
-        hold = random.uniform(0.2, max(0.2, remain))
-        hold = min(hold, remain)
-        if hold <= 0:
-            break
+    # 目標差分は debt 回収方向（反対符号）へ寄せる。
+    target_diff = clamp(-debt, -PAIR_DIFF_LIMIT, PAIR_DIFF_LIMIT)
 
-        print(f"  [SUB] key={key.upper()} hold={hold:.3f}s")
-        key_down_char(key)
-        try:
-            time.sleep(hold)
-        finally:
-            key_up_char(key)
+    # 実現可能な差分範囲（cap・非負条件）
+    min_diff = max(-PAIR_DIFF_LIMIT, pair_total - 2.0 * cap_each, -pair_total)
+    max_diff = min(PAIR_DIFF_LIMIT, 2.0 * cap_each - pair_total, pair_total)
+    if min_diff > max_diff:
+        mid = (min_diff + max_diff) / 2.0
+        min_diff = mid
+        max_diff = mid
+
+    diff = clamp(target_diff, min_diff, max_diff)
+    left = (pair_total + diff) / 2.0
+    right = (pair_total - diff) / 2.0
+
+    # 最短0.2秒制限との衝突は「可能なら補正、不可能なら許容」にする。
+    if 0 < left < MIN_HOLD and right >= MIN_HOLD:
+        move = min(MIN_HOLD - left, right - MIN_HOLD)
+        if move > 0:
+            left += move
+            right -= move
+    if 0 < right < MIN_HOLD and left >= MIN_HOLD:
+        move = min(MIN_HOLD - right, left - MIN_HOLD)
+        if move > 0:
+            right += move
+            left -= move
+
+    left = clamp(left, 0.0, cap_each)
+    right = clamp(right, 0.0, cap_each)
+    new_debt = debt + (left - right)
+    return left, right, new_debt
+
+
+def build_event_durations(pair_debts: dict[str, float]) -> tuple[float, dict[str, float]]:
+    total_event = clamp(random.gauss(3.0, 1.0), 0.2, 5.0)
+
+    # 合計時間を ws と ad にランダム配分（各pairの上限を守る）
+    ws_max_total = 2.0 * WS_MAX_HOLD
+    ad_max_total = 2.0 * AD_MAX_HOLD
+
+    ws_total_min = max(0.0, total_event - ad_max_total)
+    ws_total_max = min(ws_max_total, total_event)
+    ws_total = random.uniform(ws_total_min, ws_total_max)
+    ad_total = total_event - ws_total
+
+    w_t, s_t, pair_debts["ws"] = distribute_pair_duration(ws_total, WS_MAX_HOLD, pair_debts["ws"])
+    a_t, d_t, pair_debts["ad"] = distribute_pair_duration(ad_total, AD_MAX_HOLD, pair_debts["ad"])
+
+    durations = {"w": w_t, "s": s_t, "a": a_t, "d": d_t}
+    return total_event, durations
+
+
+def emit_key_hold(ch: str, duration: float) -> None:
+    if duration <= 0:
+        return
+    if duration < MIN_HOLD:
+        print(f"  [SUB] key={ch.upper()} hold={duration:.3f}s (min-hold conflict accepted)")
+    else:
+        print(f"  [SUB] key={ch.upper()} hold={duration:.3f}s")
+
+    key_down_char(ch)
+    try:
+        time.sleep(duration)
+    finally:
+        key_up_char(ch)
+
+
+def random_key_event(pair_debts: dict[str, float]) -> None:
+    total_event, durations = build_event_durations(pair_debts)
+    ws_diff = abs(durations["w"] - durations["s"])
+    ad_diff = abs(durations["a"] - durations["d"])
+
+    print(
+        "[EVENT] total={:.3f}s ws_diff={:.3f}s ad_diff={:.3f}s debts(ws={:.3f}, ad={:.3f})".format(
+            total_event,
+            ws_diff,
+            ad_diff,
+            pair_debts["ws"],
+            pair_debts["ad"],
+        )
+    )
+
+    # キー種類の上限は設けず、4キー全部を使ってよい。
+    for ch in random.sample(["w", "s", "a", "d"], 4):
+        emit_key_hold(ch, durations[ch])
 
 
 def run_loop(hwnd: int, duration_minutes: float | None) -> None:
+    pair_debts = {"ws": 0.0, "ad": 0.0}
     loop_start = time.monotonic()
     hard_limit = loop_start + (duration_minutes * 60.0) if duration_minutes is not None else None
 
@@ -344,7 +420,7 @@ def run_loop(hwnd: int, duration_minutes: float | None) -> None:
                 return
 
         activate_window(hwnd)
-        random_key_event()
+        random_key_event(pair_debts)
 
 
 def parse_args() -> argparse.Namespace:
@@ -355,7 +431,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--debug-fire-keys",
         action="store_true",
-        help="fire one random key event immediately at startup (for debug)",
+        help="fire one randomized WASD event immediately at startup (for debug)",
     )
     parser.add_argument(
         "--debug-fire-click",
@@ -381,8 +457,8 @@ def main() -> None:
         if args.debug_fire_keys or args.debug_fire_click:
             activate_window(hwnd)
         if args.debug_fire_keys:
-            print("[DEBUG] fire random key event now")
-            random_key_event()
+            print("[DEBUG] fire randomized key event now")
+            random_key_event({"ws": 0.0, "ad": 0.0})
         if args.debug_fire_click:
             print("[DEBUG] fire click action now")
             perform_click_action(hwnd)
